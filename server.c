@@ -12,24 +12,30 @@
 #include "reactor.h"
 
 #define PORT "9034"   // Port we're listening on
-void (*func)(int);
+void (*addfd)(void* ,int,void*);
+void (*start)(void*);
+void (*wait)(void *);
+void (*stop)(void *);
+void (*del)(void *,int);
+void* (*create)();
 
-// bool init_library(char *arg)
-// {
-//     void *hdl;
-//     hdl = dlopen("./st_reactor.so",RTLD_LAZY);
-//     if (NULL == hdl){
-//         return false;
-//     }
-//     func = (void(*)(int))dlsym(hdl,arg);
-//     if (NULL == func)
-//     {
-//         return false;
-//     }
-        
-    
-// }
-// Get sockaddr, IPv4 or IPv6:
+
+void getData(int fd,void* reactor){
+    char buf[1024];
+    memset(buf,0,sizeof(buf));
+    int nbytes = recv(fd, buf, sizeof(buf), 0);
+    if (nbytes <= 0) {
+        if (nbytes == 0) {
+            printf("pollserver: socket %d hung up\n", fd);
+        } else {
+            perror("recv");
+        }
+        del(reactor,fd);
+    } else {
+        printf("%s",buf);
+    }
+}
+
 void *get_in_addr(struct sockaddr *sa)
 {
     if (sa->sa_family == AF_INET) {
@@ -89,7 +95,9 @@ int get_listener_socket(void)
 
     return listener;
 }
+
 void getConnection(int fd, void* reactor){
+    printf("starting connection\n");
     struct sockaddr_storage remoteaddr; // Client address
     socklen_t addrlen;
     addrlen = sizeof remoteaddr;
@@ -104,33 +112,44 @@ void getConnection(int fd, void* reactor){
     "socket %d\n",
     inet_ntop(remoteaddr.ss_family,
         get_in_addr((struct sockaddr*)&remoteaddr),
-        remoteIP, INET6_ADDRSTRLEN),
-    newfd);
-    addFd(reactor,newfd,getData);
+        remoteIP, INET6_ADDRSTRLEN),newfd);
+    addfd(reactor,newfd,&getData);
     
 }
 
 // Main
 int main(void)
 {
+    void *handler_lib = dlopen("./libst_reactor.so", RTLD_LAZY);
+    if (!handler_lib) {
+        fprintf(stderr, "Error loading event handler library: %s\n", dlerror());
+        return 1;
+    }
 
-    Handler* handle = createReactor();
+    
+    addfd = dlsym(handler_lib, "addFd");
+    start = dlsym(handler_lib, "startReactor");
+    wait = dlsym(handler_lib, "WaitFor");
+    stop = dlsym(handler_lib, "stopReactor");
+    create = dlsym(handler_lib, "createReactor");
+    del = dlsym(handler_lib, "del_fd");
 
-    // Reactor reactor;
-    // reactor.fd_func = getConnection;
-    int listener;     // Listening socket descriptor
+    if (!addfd || !start || !wait || !stop || !create || !del) {
+        fprintf(stderr, "Error loading function pointers: %s\n", dlerror());
+        return 1;
+    }
 
-
-    // Set up and get a listening socket
+    Handler* handle = create();
+    int listener;     
     listener = get_listener_socket();
     if (listener == -1) {
         fprintf(stderr, "error getting listening socket\n");
         exit(1);
     }
 
-    addFd(handle,listener,getConnection);
-    startReactor(handle);
-    WaitFor(handle);
+    addfd(handle,listener,&getConnection);
+    start(handle);
+    wait(handle);
 
     return 0;
 }
